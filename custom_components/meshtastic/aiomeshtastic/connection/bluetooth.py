@@ -63,9 +63,7 @@ class BluetoothConnection(ClientApiConnection):
 
     async def _connect(self) -> None:
         target = self._ble_device if self._ble_device is not None else self._ble_address
-        self._bleak_client = BleakClient(
-            target, timeout=self._connect_timeout, backend=self._bleak_client_backend
-        )
+        self._bleak_client = BleakClient(target, timeout=self._connect_timeout, backend=self._bleak_client_backend)
         await self._bleak_client.connect()
 
         # attempt pairing, we don't know if it is required. Should not harm if
