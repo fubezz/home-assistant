@@ -41,10 +41,15 @@ class BluetoothConnection(ClientApiConnection):
     BTM_CHARACTERISTIC_LOG_UUID = "5a3d6e49-06e6-4423-9944-e9de8cdf9547"
 
     def __init__(
-        self, ble_address: str, bleak_client_backend: type[BaseBleakClient] | None = None, connect_timeout: float = 10.0
+        self,
+        ble_address: str,
+        ble_device: Any | None = None,
+        bleak_client_backend: type[BaseBleakClient] | None = None,
+        connect_timeout: float = 10.0,
     ) -> None:
         super().__init__()
         self._ble_address = ble_address
+        self._ble_device = ble_device
         self._bleak_client_backend = bleak_client_backend
         self._connect_timeout = connect_timeout
         self._ble_meshtastic_service: BleakGATTService | None = None
@@ -57,8 +62,9 @@ class BluetoothConnection(ClientApiConnection):
         self._force_read_event = asyncio.Event()
 
     async def _connect(self) -> None:
+        target = self._ble_device if self._ble_device is not None else self._ble_address
         self._bleak_client = BleakClient(
-            self._ble_address, timeout=self._connect_timeout, backend=self._bleak_client_backend
+            target, timeout=self._connect_timeout, backend=self._bleak_client_backend
         )
         await self._bleak_client.connect()
 
