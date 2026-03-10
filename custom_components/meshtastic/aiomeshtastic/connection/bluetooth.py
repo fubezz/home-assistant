@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import bleak
 from bleak import BaseBleakClient, BleakClient, BleakGATTCharacteristic
+from bleak_retry_connector import establish_connection
 from google.protobuf import message
 
 from ..protobuf import mesh_pb2  # noqa: TID252
@@ -62,9 +63,18 @@ class BluetoothConnection(ClientApiConnection):
         self._force_read_event = asyncio.Event()
 
     async def _connect(self) -> None:
-        target = self._ble_device if self._ble_device is not None else self._ble_address
-        self._bleak_client = BleakClient(target, timeout=self._connect_timeout, backend=self._bleak_client_backend)
-        await self._bleak_client.connect()
+        if self._ble_device is not None:
+            self._bleak_client = await establish_connection(
+                client_class=BleakClient,
+                device=self._ble_device,
+                name=self._ble_address,
+                max_attempts=3,
+            )
+        else:
+            self._bleak_client = BleakClient(
+                self._ble_address, timeout=self._connect_timeout, backend=self._bleak_client_backend
+            )
+            await self._bleak_client.connect()
 
         # attempt pairing, we don't know if it is required. Should not harm if
         # not needed. if pairing is required, external input is necessary as we are not
