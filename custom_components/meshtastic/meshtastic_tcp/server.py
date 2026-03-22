@@ -4,6 +4,7 @@
 
 import asyncio
 from asyncio import StreamReader, StreamWriter
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
 
@@ -83,6 +84,9 @@ class MeshtasticTcpProxy:
         self._server: asyncio.Server | None = None
 
         self._packet_queue = asyncio.Queue()
+        self._message_buffer: list[tuple[datetime, mesh_pb2.FromRadio]] = []
+        self._buffer_max_age = timedelta(days=2)
+        self._buffer_cleanup_task: asyncio.Task | None = None
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -100,9 +104,12 @@ class MeshtasticTcpProxy:
 
         self._server = await asyncio.start_server(self._handle_client, self._host, self._port)
         self._forward_task = asyncio.create_task(self._forward_from_radio(), name="tcp_proxy_read_from_gateway")
+        self._buffer_cleanup_task = asyncio.create_task(self._cleanup_buffer(), name="tcp_proxy_buffer_cleanup")
 
     async def stop(self) -> None:
         self._forward_task.cancel()
+        if self._buffer_cleanup_task:
+            self._buffer_cleanup_task.cancel()
 
         if self._server:
             self._server.close()
@@ -119,6 +126,10 @@ class MeshtasticTcpProxy:
         try:
             peer = writer.transport.get_extra_info("peername", (None, None, None, None))
             peer_name = "{}:{}".format(*peer[0:2])
+
+            for _, packet in self._message_buffer:
+                await queue.put(packet)
+            _LOGGER.debug("Sent %d buffered messages to new client %s", queue.qsize(), peer_name)
 
             async def forward_to_radio() -> None:
                 while True:
@@ -174,9 +185,24 @@ class MeshtasticTcpProxy:
         try:
             while True:
                 async for packet in self._interface.from_radio_stream():
+                    timestamp = datetime.now(UTC)
+                    self._message_buffer.append((timestamp, packet))
                     for queue in self._client_queues:
                         await queue.put(packet)
         except asyncio.CancelledError:
             pass
         except:  # noqa: E722
             _LOGGER.warning("Failuring during forwarding from gateway", exc_info=True)
+
+    async def _cleanup_buffer(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(60)
+                cutoff = datetime.now(UTC) - self._buffer_max_age
+                original_len = len(self._message_buffer)
+                self._message_buffer = [(ts, pkt) for ts, pkt in self._message_buffer if ts > cutoff]
+                removed = original_len - len(self._message_buffer)
+                if removed > 0:
+                    _LOGGER.debug("Removed %d old messages from buffer", removed)
+        except asyncio.CancelledError:
+            pass
