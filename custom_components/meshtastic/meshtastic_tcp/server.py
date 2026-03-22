@@ -84,7 +84,7 @@ class MeshtasticTcpProxy:
         self._server: asyncio.Server | None = None
 
         self._packet_queue = asyncio.Queue()
-        self._message_buffer: list[tuple[datetime, mesh_pb2.FromRadio]] = []
+        self._message_buffer: list[tuple[datetime, mesh_pb2.FromRadio, set[str]]] = []
         self._buffer_max_age = timedelta(days=2)
         self._buffer_cleanup_task: asyncio.Task | None = None
 
@@ -118,7 +118,7 @@ class MeshtasticTcpProxy:
             await self._interface.stop()
             self._should_stop = False
 
-    async def _handle_client(self, reader: StreamReader, writer: StreamWriter) -> None:
+    async def _handle_client(self, reader: StreamReader, writer: StreamWriter) -> None:  # noqa: PLR0915
         queue = asyncio.Queue()
         self._client_queues.add(queue)
         client_connection = ClientProxyTransport(reader, writer)
@@ -126,10 +126,19 @@ class MeshtasticTcpProxy:
         try:
             peer = writer.transport.get_extra_info("peername", (None, None, None, None))
             peer_name = "{}:{}".format(*peer[0:2])
+            client_ip = peer[0] if peer[0] else peer_name
 
-            for _, packet in self._message_buffer:
-                await queue.put(packet)
-            _LOGGER.debug("Sent %d buffered messages to new client %s", queue.qsize(), peer_name)
+            now = datetime.now(UTC)
+            cutoff = now - self._buffer_max_age
+            buffered_count = 0
+            for ts, packet, sent_ips in self._message_buffer:
+                if ts > cutoff:
+                    if client_ip in sent_ips:
+                        continue
+                    sent_ips.add(client_ip)
+                    buffered_count += 1
+                    await queue.put(packet)
+            _LOGGER.debug("Sent %d buffered messages to new client %s", buffered_count, peer_name)
 
             async def forward_to_radio() -> None:
                 while True:
@@ -186,7 +195,7 @@ class MeshtasticTcpProxy:
             while True:
                 async for packet in self._interface.from_radio_stream():
                     timestamp = datetime.now(UTC)
-                    self._message_buffer.append((timestamp, packet))
+                    self._message_buffer.append((timestamp, packet, set()))
                     for queue in self._client_queues:
                         await queue.put(packet)
         except asyncio.CancelledError:
@@ -200,7 +209,7 @@ class MeshtasticTcpProxy:
                 await asyncio.sleep(60)
                 cutoff = datetime.now(UTC) - self._buffer_max_age
                 original_len = len(self._message_buffer)
-                self._message_buffer = [(ts, pkt) for ts, pkt in self._message_buffer if ts > cutoff]
+                self._message_buffer = [(ts, pkt, ips) for ts, pkt, ips in self._message_buffer if ts > cutoff]
                 removed = original_len - len(self._message_buffer)
                 if removed > 0:
                     _LOGGER.debug("Removed %d old messages from buffer", removed)
