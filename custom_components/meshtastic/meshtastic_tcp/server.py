@@ -190,14 +190,29 @@ class MeshtasticTcpProxy:
             self._client_queues.remove(queue)
             await client_connection.disconnect()
 
+    def _is_buffer_message(self, from_radio: mesh_pb2.FromRadio) -> bool:
+        return (
+            from_radio.HasField("packet")
+            and from_radio.packet.HasField("decoded")
+            and from_radio.packet.decoded.portnum
+            in (
+                mesh_pb2.TEXT_MESSAGE_APP,
+                mesh_pb2.POSITION_APP,
+                mesh_pb2.WAYPOINT_APP,
+                mesh_pb2.TELEMETRY_APP,
+                mesh_pb2.NODEINFO_APP,
+            )
+        )
+
     async def _forward_from_radio(self) -> None:
         try:
             while True:
-                async for packet in self._interface.from_radio_stream():
-                    timestamp = datetime.now(UTC)
-                    self._message_buffer.append((timestamp, packet, set()))
+                async for from_radio in self._interface.from_radio_stream():
+                    if self._is_buffer_message(from_radio):
+                        timestamp = datetime.now(UTC)
+                        self._message_buffer.append((timestamp, from_radio, set()))
                     for queue in self._client_queues:
-                        await queue.put(packet)
+                        await queue.put(from_radio)
         except asyncio.CancelledError:
             pass
         except:  # noqa: E722
